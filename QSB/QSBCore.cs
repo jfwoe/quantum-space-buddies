@@ -115,6 +115,14 @@ public class QSBCore : ModBehaviour
 	}
 
 	private bool _steamworksInitialized;
+	private static bool _steamworksFallbackToKcp;
+
+	private void EnableKcpFallback(string reason)
+	{
+		UseKcpTransport = true;
+		_steamworksFallbackToKcp = true;
+		DebugLog.ToConsole(reason, MessageType.Warning);
+	}
 
 	public void Awake()
 	{
@@ -153,19 +161,38 @@ public class QSBCore : ModBehaviour
 
 			if (!SteamAPI.Init())
 			{
-				DebugLog.ToConsole($"FATAL - SteamAPI.Init() failed. Do you have Steam open, and are you logged in?", MessageType.Fatal);
-				return;
+				EnableKcpFallback("SteamAPI.Init() failed. Falling back to KCP transport.");
 			}
-
-			_steamworksInitialized = true;
+			else
+			{
+				_steamworksInitialized = true;
+			}
 		}
 		else
 		{
-			SteamRerouter.ModSide.Interop.Init();
+			if (!SteamAPI.IsSteamRunning())
+			{
+				EnableKcpFallback("Steam is not running. Falling back to KCP transport.");
+			}
+			else if (SteamManager.s_instance == null || !SteamManager.s_instance.m_bInitialized)
+			{
+				EnableKcpFallback("Steamworks is not initialized. Falling back to KCP transport.");
+			}
+			else
+			{
+				SteamRerouter.ModSide.Interop.Init();
 
-			DebugLog.DebugWrite($"Is steam - overriding AppID");
-			OverrideAppId();
+				DebugLog.DebugWrite($"Is steam - overriding AppID");
+				OverrideAppId();
+
+				if (SteamManager.s_instance == null || !SteamManager.s_instance.m_bInitialized)
+				{
+					EnableKcpFallback("Steamworks re-initialization failed. Falling back to KCP transport.");
+				}
+			}
 		}
+
+		QSBNetworkManager.UpdateTransport();
 	}
 
 	public void OverrideAppId()
@@ -211,6 +238,14 @@ public class QSBCore : ModBehaviour
 	public void Start()
 	{
 		Helper = ModHelper;
+
+		if (_steamworksFallbackToKcp)
+		{
+			var config = Helper.Config;
+			config.SetSettingsValue("useKcpTransport", true);
+			Helper.Storage.Save(config, OWML.Common.Constants.ModConfigFileName);
+		}
+
 		DebugLog.ToConsole($"* Start of QSB version {QSBVersion} - authored by {Helper.Manifest.Author}", MessageType.Info);
 
 		CheckNewHorizons();
@@ -380,7 +415,7 @@ public class QSBCore : ModBehaviour
 		DebugCameraSettings.UpdateFromDebugSetting();
 
 		Timeout = config.GetSettingsValue<int>("timeout");
-		UseKcpTransport = config.GetSettingsValue<bool>("useKcpTransport") || DebugSettings.AutoStart;
+		UseKcpTransport = config.GetSettingsValue<bool>("useKcpTransport") || DebugSettings.AutoStart || _steamworksFallbackToKcp;
 		var foundValue = config.GetSettingsValue<int>("kcpPort");
 		KcpPort = (ushort)Mathf.Clamp(foundValue, ushort.MinValue, ushort.MaxValue);
 		QSBNetworkManager.UpdateTransport();
